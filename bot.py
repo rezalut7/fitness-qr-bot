@@ -1,87 +1,50 @@
-import asyncio, logging, os
-from datetime import datetime
-from functools import partial
+import os
+from flask import Flask, request
+import telebot
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
-from aiogram.types import (
-    Message, CallbackQuery,
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-)
-from aiogram.fsm.state import StatesGroup, State
-from dotenv import load_dotenv
+# ⚙️ Подгружаем токен из переменных окружения
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+bot = telebot.TeleBot(BOT_TOKEN)
 
-from database_ydb import save_client
+# 🌐 Flask-приложение
+app = Flask(__name__)
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+# 📍 Главная страница (чтобы Render не ругался)
+@app.route("/", methods=["GET"])
+def index():
+    return "Бот запущен!", 200
 
-load_dotenv()
-bot = Bot(os.getenv("BOT_TOKEN"), parse_mode="HTML")
-dp = Dispatcher()
+# 📩 Webhook-приёмник
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("UTF-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
 
-class Reg(StatesGroup):
-    waiting_consent = State()
-    waiting_phone   = State()
+# 🟢 Команда /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    button = telebot.types.KeyboardButton("✅ Согласен на обработку персональных данных и передачу тренеру DDX «Озерное»", request_contact=True)
+    markup.add(button)
+    bot.send_message(message.chat.id, "Привет! Пожалуйста, подтвердите согласие на обработку данных и отправьте свой номер телефона:", reply_markup=markup)
 
-@dp.message(CommandStart())
-async def start(m: Message, state):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("✅ Согласен", callback_data="yes")],
-        [InlineKeyboardButton("❌ Не согласен", callback_data="no")],
-    ])
-    await m.answer(
-        "Привет! Я бот тренажёрного зала.\n\n"
-        "Даю согласие на обработку персональных данных (ФЗ-152)?",
-        reply_markup=kb,
-    )
-    await state.set_state(Reg.waiting_consent)
+# 📞 Обработка номера телефона
+@bot.message_handler(content_types=['contact'])
+def handle_contact(message):
+    name = message.from_user.first_name or "Неизвестно"
+    phone = message.contact.phone_number
 
-@dp.callback_query(Reg.waiting_consent, F.data.in_(["yes", "no"]))
-async def consent(cb: CallbackQuery, state):
-    if cb.data == "no":
-        await cb.message.answer("Окей, без согласия никак. /start — если передумаешь.")
-        await state.clear()
-        return
+    # 👁 Отправляем данные тебе или логируем
+    bot.send_message(message.chat.id, f"Спасибо, {name}! Мы получили ваш номер: {phone}")
+    
+    # 🔒 Тут можно сохранить в базу, лог-файл, Google Sheet и т.д.
+    print(f"[НОВЫЙ КЛИЕНТ] Имя: {name}, Телефон: {phone}")
 
-    await state.update_data(consent_at=datetime.utcnow())
-    kb = ReplyKeyboardMarkup(
-        resize_keyboard=True, one_time_keyboard=True,
-        keyboard=[[KeyboardButton("Отправить телефон 📱", request_contact=True)]],
-    )
-    await cb.message.edit_text("Спасибо! Теперь отправь номер телефона:")
-    await cb.message.answer("⬇️ Жми кнопку ниже", reply_markup=kb)
-    await state.set_state(Reg.waiting_phone)
-
-@dp.message(Reg.waiting_phone, F.contact)
-async def phone(msg: Message, state):
-    data = await state.get_data()
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        partial(
-            save_client,
-            msg.from_user.id,
-            msg.from_user.full_name,
-            msg.contact.phone_number,
-            data["consent_at"],
-        ),
-    )
-
-    btn = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton("Записаться на персональную тренировку", callback_data="personal")
-    ]])
-    await msg.answer("Отлично! Жми кнопку, чтобы записаться 👇", reply_markup=btn)
-    await state.clear()
-
-@dp.callback_query(F.data == "personal")
-async def personal(cb: CallbackQuery):
-    await cb.message.edit_reply_markup()
-    await cb.message.answer("🎉 Вы записаны! Тренер скоро свяжется. Спасибо!")
-
-async def main():
-    await dp.start_polling(bot)
-
+# 🚀 Установка Webhook при запуске
 if __name__ == "__main__":
-    asyncio.run(main())
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
+    bot.remove_webhook()
+    bot.set_webhook(url=webhook_url)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
