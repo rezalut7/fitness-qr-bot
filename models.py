@@ -1,10 +1,17 @@
-from sqlmodel import SQLModel, Field
-from datetime import datetime
+from dataclasses import dataclass
 
-class Client(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    tg_id: int
-    full_name: str
+@dataclass
+class Trainer:
+    id: int
+    name: str
+    telegram_id: int
+    priority: int
+    clients_count: int
+
+@dataclass
+class Client:
+    id: int
+    name: str
     phone: str
-    consent_at: datetime
-    registered_at: datetime = Field(default_factory=datetime.utcnow)
+    date: str
+    assigned_trainer_id: int
