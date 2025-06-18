@@ -1,15 +1,18 @@
 import asyncio, logging, os
+from datetime import datetime
+from functools import partial
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import (
-    Message, ReplyKeyboardMarkup, KeyboardButton,
+    Message, CallbackQuery,
+    ReplyKeyboardMarkup, KeyboardButton,
     InlineKeyboardMarkup, InlineKeyboardButton,
 )
-from dotenv import load_dotenv
-from database import Session, init_db
-from models import Client
-from datetime import datetime
 from aiogram.fsm.state import StatesGroup, State
+from dotenv import load_dotenv
+
+from database_ydb import save_client
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -18,72 +21,67 @@ load_dotenv()
 bot = Bot(os.getenv("BOT_TOKEN"), parse_mode="HTML")
 dp = Dispatcher()
 
-# --- Состояния ----------------------------------------------------
 class Reg(StatesGroup):
-    waiting_phone = State()
     waiting_consent = State()
+    waiting_phone   = State()
 
-# --- Хэндлеры -----------------------------------------------------
 @dp.message(CommandStart())
 async def start(m: Message, state):
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True,
-        keyboard=[[KeyboardButton(text="Поделиться телефоном 📱", request_contact=True)]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton("✅ Согласен", callback_data="yes")],
+        [InlineKeyboardButton("❌ Не согласен", callback_data="no")],
+    ])
     await m.answer(
-        "Привет! Я бот тренажёрного зала.\n"
-        "🔒 Для записи поделитесь номером телефона.",
-        reply_markup=kb)
+        "Привет! Я бот тренажёрного зала.\n\n"
+        "Даю согласие на обработку персональных данных (ФЗ-152)?",
+        reply_markup=kb,
+    )
+    await state.set_state(Reg.waiting_consent)
+
+@dp.callback_query(Reg.waiting_consent, F.data.in_(["yes", "no"]))
+async def consent(cb: CallbackQuery, state):
+    if cb.data == "no":
+        await cb.message.answer("Окей, без согласия никак. /start — если передумаешь.")
+        await state.clear()
+        return
+
+    await state.update_data(consent_at=datetime.utcnow())
+    kb = ReplyKeyboardMarkup(
+        resize_keyboard=True, one_time_keyboard=True,
+        keyboard=[[KeyboardButton("Отправить телефон 📱", request_contact=True)]],
+    )
+    await cb.message.edit_text("Спасибо! Теперь отправь номер телефона:")
+    await cb.message.answer("⬇️ Жми кнопку ниже", reply_markup=kb)
     await state.set_state(Reg.waiting_phone)
 
 @dp.message(Reg.waiting_phone, F.contact)
-async def got_phone(m: Message, state):
-    await state.update_data(phone=m.contact.phone_number)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("✅ Согласен", callback_data="consent_yes")],
-        [InlineKeyboardButton("❌ Нет", callback_data="consent_no")],
-    ])
-    await m.answer(
-        "Даю согласие на обработку персональных данных "
-        "и их передачу тренеру (ФЗ-152)?",
-        reply_markup=kb)
-    await state.set_state(Reg.waiting_consent)
-
-@dp.callback_query(Reg.waiting_consent, F.data.startswith("consent_"))
-async def consent(cb, state):
-    if cb.data == "consent_no":
-        await cb.message.answer("Без согласия регистрация невозможна. До встречи!")
-        await state.clear()
-        return
+async def phone(msg: Message, state):
     data = await state.get_data()
-    async with Session() as s:
-        s.add(Client(
-            tg_id=cb.from_user.id,
-            full_name=cb.from_user.full_name,
-            phone=data["phone"],
-            consent_at=datetime.utcnow(),
-        ))
-        await s.commit()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        partial(
+            save_client,
+            msg.from_user.id,
+            msg.from_user.full_name,
+            msg.contact.phone_number,
+            data["consent_at"],
+        ),
+    )
+
     btn = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton("Записаться на персональную тренировку",
-                             callback_data="personal")
+        InlineKeyboardButton("Записаться на персональную тренировку", callback_data="personal")
     ]])
-    await cb.message.edit_text(
-        "Отлично! Нажмите кнопку ниже, чтобы записаться.",
-        reply_markup=btn)
+    await msg.answer("Отлично! Жми кнопку, чтобы записаться 👇", reply_markup=btn)
     await state.clear()
 
 @dp.callback_query(F.data == "personal")
-async def personal(cb):
+async def personal(cb: CallbackQuery):
     await cb.message.edit_reply_markup()
-    await cb.message.answer(
-        "🎉 Спасибо! Тренер свяжется с вами в ближайшее время.")
+    await cb.message.answer("🎉 Вы записаны! Тренер скоро свяжется. Спасибо!")
 
-# --- Запуск -------------------------------------------------------
 async def main():
-    await init_db()
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
