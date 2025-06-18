@@ -1,0 +1,4 @@
+aiogram[fast]==3.5.0
+sqlmodel[asyncio]==0.0.16
+asyncpg==0.29.0
+python-dotenv==1.0.1
