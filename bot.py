@@ -1,70 +1,58 @@
-import os
-import csv
-from datetime import datetime
-from flask import Flask, request
 import telebot
+from telebot import types
+import requests
+from datetime import datetime
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# 🔑 Telegram Bot Token
+BOT_TOKEN = '7968496888:AAHv52debk2DgW_mkfaW3S5FIkPOEVWof7A'
 bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask(__name__)
 
-CSV_FILE = "clients.csv"
+# 🔐 NocoDB Token
+NOCO_TOKEN = 'kTJUuDfBwbq6E7ZWnqj6aFOyeJttdzhNWoBqhuwD'
 
-# Создание файла с заголовками, если его нет
-if not os.path.exists(CSV_FILE):
-    with open(CSV_FILE, mode='w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(["Имя", "Телефон", "Дата"])
+# 🌐 NocoDB Table API URL (если есть пробелы — оставляй, NocoDB их принимает)
+NOCO_URL = 'https://contacts-db.onrender.com/api/v1/db/data/v1/Getting Started/Контакты_Озерная'
 
-@app.route("/", methods=["GET"])
-def index():
-    return "Бот работает и сохраняет в CSV", 200
-
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "OK", 200
-
+# 👤 Обработка команды /start после входа по QR
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    args = message.text.split()
-    if len(args) > 1 and args[1] == "consent":
-        show_consent_message(message)
-    else:
-        bot.send_message(message.chat.id, "Привет! Для начала отсканируйте QR-код.")
-
-def show_consent_message(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    button = telebot.types.KeyboardButton("✅ Согласен и отправляю телефон", request_contact=True)
+def start_handler(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    button = types.KeyboardButton("✅ Я согласен на обработку персональных данных", request_contact=True)
     markup.add(button)
-
-    text = (
-        "🔒 *Согласие на обработку персональных данных*\n\n"
+    bot.send_message(message.chat.id, 
         "Нажимая на кнопку, вы подтверждаете согласие на обработку ваших персональных данных "
         "(ФИО и номер телефона) и передачу их тренеру фитнес-центра *DDX «Озерная»* "
         "в целях обратной связи и записи на тренировку.\n\n"
         "Никакие данные не передаются третьим лицам. "
-        "Вы можете в любой момент отозвать согласие, написав нам в Telegram."
-    )
+        "Вы можете в любой момент отозвать согласие, написав нам в Telegram.",
+        reply_markup=markup)
 
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
-
+# 📲 Обработка контакта
 @bot.message_handler(content_types=['contact'])
-def handle_contact(message):
-    name = message.from_user.first_name or "Неизвестно"
+def contact_handler(message):
+    name = message.contact.first_name or "Без имени"
     phone = message.contact.phone_number
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now = datetime.now().isoformat()
 
-    with open(CSV_FILE, mode='a', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow([name, phone, now])
+    data = {
+        "Имя": name,
+        "НомерТелефона": phone,
+        "Дата": now
+    }
 
-    bot.send_message(message.chat.id, f"Спасибо, {name}! Мы записали ваш номер: {phone}")
+    headers = {
+        "xc-token": NOCO_TOKEN,
+        "Content-Type": "application/json"
+    }
 
-if __name__ == "__main__":
-    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
-    bot.remove_webhook()
-    bot.set_webhook(url=webhook_url)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    try:
+        response = requests.post(NOCO_URL, headers=headers, json=data)
+        if response.status_code in [200, 201]:
+            bot.send_message(message.chat.id, "✅ Контакт успешно сохранён! Спасибо.")
+        else:
+            bot.send_message(message.chat.id, f"❌ Ошибка сохранения: {response.status_code}")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+# 🔁 Запуск бота
+bot.polling()
