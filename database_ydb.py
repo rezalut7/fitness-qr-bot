@@ -8,6 +8,7 @@ driver = ydb.Driver(
         database=os.getenv("YDB_DATABASE"),
         credentials=ydb.iam.ServiceAccountCredentials(
             service_account_id=os.getenv("YDB_SA_ID"),
+            access_key_id=os.getenv("YDB_KEY_ID"),
             private_key=os.getenv("YDB_SA_KEY"),
         ),
     )
