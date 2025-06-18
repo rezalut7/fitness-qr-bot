@@ -2,19 +2,16 @@ import os
 from flask import Flask, request
 import telebot
 
-# ⚙️ Подгружаем токен из переменных окружения
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = telebot.TeleBot(BOT_TOKEN)
-
-# 🌐 Flask-приложение
 app = Flask(__name__)
 
-# 📍 Главная страница (чтобы Render не ругался)
+# Главная страница — просто заглушка
 @app.route("/", methods=["GET"])
 def index():
     return "Бот запущен!", 200
 
-# 📩 Webhook-приёмник
+# Webhook-приёмник
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("UTF-8")
@@ -22,27 +19,46 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# 🟢 Команда /start
+# Обработка /start и параметра ?start=consent
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
-    button = telebot.types.KeyboardButton("✅ Согласен на обработку персональных данных и передачу тренеру DDX «Озерное»", request_contact=True)
-    markup.add(button)
-    bot.send_message(message.chat.id, "Привет! Пожалуйста, подтвердите согласие на обработку данных и отправьте свой номер телефона:", reply_markup=markup)
+    args = message.text.split()
+    if len(args) > 1 and args[1] == "consent":
+        show_consent_message(message)
+    else:
+        bot.send_message(message.chat.id, "Привет! Для начала перейдите по QR-коду.")
 
-# 📞 Обработка номера телефона
+# Отдельная функция — показываем сообщение с согласием
+def show_consent_message(message):
+    markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    button = telebot.types.KeyboardButton("✅ Согласен и отправляю телефон", request_contact=True)
+    markup.add(button)
+
+    text = (
+        "🔒 *Согласие на обработку персональных данных*\n\n"
+        "Нажимая на кнопку, вы подтверждаете согласие на обработку ваших персональных данных "
+        "(имя и номер телефона) и передачу их тренеру фитнес-клуба *DDX «Озерная»* "
+        "в целях обратной связи и записи на тренировку.\n\n"
+        "Никакие данные не передаются третьим лицам. "
+        "Вы можете в любой момент отозвать согласие, написав нам в Telegram."
+    )
+
+    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=markup)
+
+# Обработка полученного номера телефона
 @bot.message_handler(content_types=['contact'])
 def handle_contact(message):
     name = message.from_user.first_name or "Неизвестно"
     phone = message.contact.phone_number
 
-    # 👁 Отправляем данные тебе или логируем
+    # Отправить клиенту подтверждение
     bot.send_message(message.chat.id, f"Спасибо, {name}! Мы получили ваш номер: {phone}")
-    
-    # 🔒 Тут можно сохранить в базу, лог-файл, Google Sheet и т.д.
-    print(f"[НОВЫЙ КЛИЕНТ] Имя: {name}, Телефон: {phone}")
 
-# 🚀 Установка Webhook при запуске
+    # Отправить тебе (вставь свой chat_id ниже)
+    admin_id = <ВСТАВЬ_СВОЙ_CHAT_ID>  # 👈 вот сюда свой chat_id, чтобы тебе шли заявки
+    bot.send_message(admin_id, f"👤 Новый клиент:\nИмя: {name}\nТелефон: {phone}")
+
+# Установка webhook при старте
 if __name__ == "__main__":
     webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{BOT_TOKEN}"
     bot.remove_webhook()
